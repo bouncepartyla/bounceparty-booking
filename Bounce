@@ -1,0 +1,1028 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Check, Copy, ExternalLink, FileText, Handshake, Package, Plus, Printer, Trash2, Calendar as CalIcon, MapPin, Route, DollarSign, Settings } from "lucide-react";
+
+// ——————————————————————————————————————————————————————————————
+// BouncePartyLA — Booking + Inventory + Sales Tax (Pro MVP)
+// New in this update:
+// • Calendar (month view) with daily counts and quick-open orders
+// • Settings tab (Stripe links, delivery per‑mile, origin ZIP, precise tax API stubs, Supabase placeholders)
+// • Invoice PDF (print) and Pay Deposit / Pay in Full buttons (open Stripe Payment Links from Settings)
+// • Driver assignment + Export routes CSV for a day
+// • Delivery estimate helpers (manual miles + per‑mile auto pricing)
+// ——————————————————————————————————————————————————————————————
+
+// ========================= Seed inventory =========================
+const DEFAULT_INVENTORY: InventoryItem[] = [
+  { sku: "BH-WHITE-CASTLE", name: "New White Castle (Large)", price: 400, stock: 3, category: "main", components: [
+    { sku: "COMP-BLOWER-1HP", qty: 1 }, { sku: "COMP-SANDBAG", qty: 8 }, { sku: "COMP-TARP-12x12", qty: 1 }, { sku: "COMP-EXT-100FT", qty: 1 }
+  ]},
+  { sku: "BH-MINI-SLIDE", name: "Mini Bounce w/ Slide", price: 240, stock: 4, category: "main", components: [
+    { sku: "COMP-BLOWER-1HP", qty: 1 }, { sku: "COMP-SANDBAG", qty: 6 }, { sku: "COMP-TARP-10x10", qty: 1 }, { sku: "COMP-EXT-50FT", qty: 1 }
+  ]},
+  { sku: "BUBBLE-HOUSE", name: "Bubble House (Clear)", price: 390, stock: 2, category: "main", components: [
+    { sku: "COMP-BLOWER-1HP", qty: 1 }, { sku: "COMP-SANDBAG", qty: 6 }, { sku: "COMP-TARP-12x12", qty: 1 }, { sku: "COMP-EXT-100FT", qty: 1 }
+  ]},
+  { sku: "SOFT-PLAY-GREY", name: "Soft Play (Grey 10x12)", price: 440, stock: 2, category: "main", components: [
+    { sku: "COMP-MATS-FOAM", qty: 8 }
+  ]},
+  // Add‑ons
+  { sku: "ADD-BALLOON-COLORS", name: "Balloon Colors (set)", price: 40, stock: 50, category: "addon" },
+  { sku: "ADD-TABLE", name: "Tables (6ft)", price: 12, stock: 30, category: "addon" },
+  { sku: "ADD-CHAIR", name: "Chairs", price: 2.5, stock: 150, category: "addon" },
+  // Packages
+  { sku: "PKG-PARTY-BASIC", name: "Package: Party Basic (Mini + Soft Play)", price: 0, stock: 99, category: "package", components: [
+    { sku: "BH-MINI-SLIDE", qty: 1 }, { sku: "SOFT-PLAY-GREY", qty: 1 }
+  ]},
+  { sku: "PKG-DELUXE", name: "Package: Deluxe (White Castle + Soft Play + Balloons)", price: 0, stock: 99, category: "package", components: [
+    { sku: "BH-WHITE-CASTLE", qty: 1 }, { sku: "SOFT-PLAY-GREY", qty: 1 }, { sku: "ADD-BALLOON-COLORS", qty: 1 }
+  ]},
+  // Components
+  { sku: "COMP-BLOWER-1HP", name: "Blower 1HP", price: 0, stock: 20, category: "component" },
+  { sku: "COMP-SANDBAG", name: "Sandbag 50lb", price: 0, stock: 200, category: "component" },
+  { sku: "COMP-TARP-10x10", name: "Tarp 10x10", price: 0, stock: 20, category: "component" },
+  { sku: "COMP-TARP-12x12", name: "Tarp 12x12", price: 0, stock: 20, category: "component" },
+  { sku: "COMP-EXT-50FT", name: "Extension Cord 50ft", price: 0, stock: 40, category: "component" },
+  { sku: "COMP-EXT-100FT", name: "Extension Cord 100ft", price: 0, stock: 20, category: "component" },
+  { sku: "COMP-MATS-FOAM", name: "Foam Mats (2x2)", price: 0, stock: 200, category: "component" },
+];
+
+// ========================= Settings (local) =========================
+const DEFAULT_SETTINGS: SettingsModel = {
+  stripeDepositLink: "", // Stripe Payment Link URL for deposit
+  stripeFullLink: "",    // Stripe Payment Link URL for full payment
+  originZip: "91208",
+  ratePerMile: 2.0, // $/mile
+  preciseTaxEnabled: false,
+  taxApiUrl: "", // e.g., https://api.taxjar.com/v2/taxes
+  taxApiKey: "",
+  supabaseUrl: "",
+  supabaseAnon: "",
+};
+
+// ZIP → Sales tax (fallback); default = 10.25%
+const TAX_BY_ZIP: Record<string, number> = {
+  "90012": 0.1025, "90024": 0.1025, "90027": 0.1025, "90039": 0.1025,
+  "91201": 0.1025, "91202": 0.1025, "91203": 0.1025, "91204": 0.1025,
+  "91205": 0.1025, "91206": 0.1025, "91207": 0.1025, "91208": 0.1025,
+  "91011": 0.1025, "91505": 0.1025, "90712": 0.1025,
+  "92626": 0.0875, "92627": 0.0875, "92704": 0.0875,
+};
+
+function getTaxRate(zip: string): number { return TAX_BY_ZIP[zip?.trim()] ?? 0.1025; }
+
+// ========================= localStorage helpers =========================
+const LS_KEYS = { inventory: "bpla_inventory_v3", bookings: "bpla_bookings_v3", settings: "bpla_settings_v1" };
+function useLocalState<T>(key: string, initial: T) {
+  const [state, setState] = useState<T>(() => { try { const raw = localStorage.getItem(key); return raw? JSON.parse(raw) as T : initial; } catch { return initial; } });
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(state)); } catch {} }, [key, state]);
+  return [state, setState] as const;
+}
+
+// ========================= Types =========================
+type Category = "main" | "addon" | "package" | "component";
+
+type InventoryItem = { sku: string; name: string; price: number; stock: number; category: Category; components?: { sku: string; qty: number }[] };
+
+type CartLine = { sku: string; qty: number };
+
+type SettingsModel = {
+  stripeDepositLink: string; stripeFullLink: string; originZip: string; ratePerMile: number;
+  preciseTaxEnabled: boolean; taxApiUrl: string; taxApiKey: string; supabaseUrl: string; supabaseAnon: string;
+};
+
+type Booking = {
+  id: string; date: string; customerName: string; phone?: string; email?: string; address?: string;
+  zip: string; venueType: "house" | "park" | "venue"; hasOutlet: boolean;
+  deliveryFee: number; generatorFee: number; discount: number; notes?: string;
+  distanceMiles?: number; // manual or computed
+  driver?: string; status?: "new"|"confirmed"|"delivered"|"picked_up";
+  lines: CartLine[]; subtotal: number; taxRate: number; taxAmount: number; total: number;
+  depositPercent: number; depositAmount: number; balanceDue: number; createdAt: string;
+};
+
+// ========================= Utils =========================
+function computeReservedForDate(bookings: Booking[], date: string) {
+  const out: Record<string, number> = {}; bookings.filter(b=>b.date===date).forEach(b=> b.lines.forEach(l=> out[l.sku]=(out[l.sku]??0)+l.qty)); return out;
+}
+function money(n: number){ return n.toLocaleString("en-US", {style:"currency", currency:"USD"}); }
+
+function expandPackages(lines: CartLine[], inventory: InventoryItem[]): CartLine[] {
+  const map = new Map(inventory.map(i=>[i.sku,i] as const));
+  const out: Record<string, number> = {};
+  for (const l of lines){
+    const item = map.get(l.sku);
+    if (item?.category === "package" && item.components){ item.components.forEach(c => { out[c.sku] = (out[c.sku]??0) + c.qty*l.qty; }); }
+    else { out[l.sku] = (out[l.sku]??0) + l.qty; }
+  }
+  return Object.entries(out).map(([sku, qty])=>({sku, qty}));
+}
+
+async function tryPreciseTax(settings: SettingsModel, address: string, amount: number): Promise<number|null>{
+  try {
+    if(!settings.preciseTaxEnabled || !settings.taxApiUrl || !settings.taxApiKey) return null;
+    // Stub call — most tax APIs require server-side secrets. We attempt fetch; if blocked, fallback to null.
+    const res = await fetch(settings.taxApiUrl, { method: "POST", headers: { "Authorization": `Bearer ${settings.taxApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ to_address: address, amount }) });
+    if(!res.ok) return null; const data = await res.json();
+    const rate = Number(data?.rate ?? data?.tax_rate ?? data?.tax?.rate) || null; // schema‑agnostic best effort
+    if(rate && rate>0 && rate<0.2) return rate; return null;
+  } catch { return null; }
+}
+
+function computeTotals(lines: CartLine[], inventory: InventoryItem[], zip: string, deliveryFee: number, generatorFee: number, discount: number, depositPercent: number){
+  const expanded = expandPackages(lines, inventory);
+  const priceMap = new Map(inventory.map(i=>[i.sku,i.price] as const));
+  const subtotal = expanded.reduce((acc,l)=> acc + (priceMap.get(l.sku)??0)*l.qty, 0);
+  const extras = (deliveryFee||0)+(generatorFee||0);
+  const preTax = Math.max(subtotal + extras - (discount||0), 0);
+  const taxRate = getTaxRate(zip);
+  const taxAmount = +(preTax*taxRate).toFixed(2);
+  const total = +(preTax + taxAmount).toFixed(2);
+  const depositAmount = +(total * (depositPercent/100)).toFixed(2);
+  const balanceDue = +(total - depositAmount).toFixed(2);
+  return { subtotal, taxRate, taxAmount, total, depositAmount, balanceDue };
+}
+
+function aggregateComponents(lines: CartLine[], inventory: InventoryItem[]){
+  const map = new Map(inventory.map(i=>[i.sku,i] as const));
+  const expanded = expandPackages(lines, inventory);
+  const totals: Record<string, number> = {};
+  for (const l of expanded){ const item = map.get(l.sku); if (item?.components){ item.components.forEach(c=>{ totals[c.sku]=(totals[c.sku]??0)+c.qty*l.qty; }); } }
+  return Object.entries(totals).map(([sku, qty])=>({ sku, qty }));
+}
+
+async function copyText(txt: string){ try{ await navigator.clipboard.writeText(txt);}catch{ alert("Copy failed"); } }
+
+function downloadFile(name: string, content: string){ const blob = new Blob([content], {type:"text/csv;charset=utf-8;"}); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url); }
+
+// ========================= App =========================
+export default function App(){
+  const [inventory, setInventory] = useLocalState<InventoryItem[]>(LS_KEYS.inventory, DEFAULT_INVENTORY);
+  const [bookings, setBookings] = useLocalState<Booking[]>(LS_KEYS.bookings, []);
+  const [settings, setSettings] = useLocalState<SettingsModel>(LS_KEYS.settings, DEFAULT_SETTINGS);
+
+  // Form state
+  const [date,setDate] = useState<string>(new Date().toISOString().slice(0,10));
+  const [zip,setZip] = useState("91208");
+  const [venueType,setVenueType] = useState<"house"|"park"|"venue">("house");
+  const [hasOutlet,setHasOutlet] = useState(true);
+  const [deliveryFee,setDeliveryFee] = useState(15);
+  const [distanceMiles,setDistanceMiles] = useState<number|undefined>(undefined);
+  const [discount,setDiscount] = useState(0);
+  const [depositPercent,setDepositPercent] = useState(12.5);
+  const [customerName,setCustomerName] = useState("");
+  const [phone,setPhone] = useState("");
+  const [email,setEmail] = useState("");
+  const [address,setAddress] = useState("");
+  const [driver,setDriver] = useState("");
+  const [status,setStatus] = useState<Booking["status"]>("new");
+  const [notes,setNotes] = useState("");
+  const [cart,setCart] = useState<CartLine[]>([]);
+
+  const generatorFee = useMemo(()=> (venueType!=="house" && !hasOutlet) ? 100 : 0, [venueType,hasOutlet]);
+  const reservedMap = useMemo(()=> computeReservedForDate(bookings,date), [bookings,date]);
+
+  const availability = useMemo(()=> inventory.filter(i=> i.category!=="component").map(item=>{
+    const reserved = reservedMap[item.sku]??0; const available = Math.max(item.stock - reserved, 0);
+    const inCart = cart.find(c=>c.sku===item.sku)?.qty ?? 0; return { ...item, reserved, available, inCart };
+  }), [inventory,reservedMap,cart]);
+
+  const totals = useMemo(()=> computeTotals(cart, inventory, zip, deliveryFee, generatorFee, discount, depositPercent), [cart,inventory,zip,deliveryFee,generatorFee,discount,depositPercent]);
+
+  function addToCart(sku:string){ setCart(prev=>{ const e=prev.find(l=>l.sku===sku); return e? prev.map(l=> l.sku===sku? {...l, qty:l.qty+1}:l) : [...prev,{sku,qty:1}]}); }
+  function decFromCart(sku:string){ setCart(prev=> prev.map(l=> l.sku===sku?{...l,qty:l.qty-1}:l).filter(l=>l.qty>0)); }
+  function removeFromCart(sku:string){ setCart(prev=> prev.filter(l=> l.sku!==sku)); }
+
+  async function saveBooking(){
+    const problems: string[] = [];
+    cart.forEach(line=>{ const inv=inventory.find(i=>i.sku===line.sku); const reserved=reservedMap[line.sku]??0; const available=(inv?.stock??0)-reserved; if(line.qty>available){ problems.push(`${inv?.name??line.sku}: requested ${line.qty}, only ${available} available on ${date}`);} });
+    if(!customerName.trim()) problems.push("Enter customer name"); if(!zip.trim()) problems.push("Enter ZIP"); if(cart.length===0) problems.push("Add at least one item");
+    if(problems.length){ alert("Fix before saving:
+
+"+problems.join("
+")); return; }
+
+    // Optional precise tax (best effort, falls back silently)
+    let { subtotal, taxRate, taxAmount, total, depositAmount, balanceDue } = totals;
+    const maybeRate = await tryPreciseTax(settings, address || zip, Math.max(subtotal + (deliveryFee||0) + (generatorFee||0) - (discount||0), 0));
+    if(maybeRate){ taxRate = maybeRate; taxAmount = +((subtotal + (deliveryFee||0) + (generatorFee||0) - (discount||0)) * taxRate).toFixed(2); total = +((subtotal + (deliveryFee||0) + (generatorFee||0) - (discount||0)) + taxAmount).toFixed(2); depositAmount = +(total * (depositPercent/100)).toFixed(2); balanceDue = +(total - depositAmount).toFixed(2); }
+
+    const booking: Booking = {
+      id: crypto.randomUUID(), date, customerName: customerName.trim(), phone: phone.trim()||undefined, email: email.trim()||undefined, address: address.trim()||undefined,
+      zip: zip.trim(), venueType, hasOutlet, deliveryFee:+deliveryFee||0, generatorFee:+generatorFee||0, discount:+discount||0, notes: notes.trim()||undefined,
+      distanceMiles, driver: driver||undefined, status,
+      lines: cart.map(c=>({...c})), subtotal, taxRate, taxAmount, total, depositPercent, depositAmount, balanceDue, createdAt: new Date().toISOString(),
+    };
+    setBookings(prev=> [booking, ...prev]); setCart([]); setDiscount(0);
+    alert("Booking saved ✔");
+  }
+
+  function resetAll(){ if(!confirm("Reset inventory, bookings, and settings?")) return; setInventory(DEFAULT_INVENTORY); setBookings([]); setCart([]); setSettings(DEFAULT_SETTINGS); }
+
+  const widgetEmbedCode = `<iframe src="https://your-domain.com/booking#widget" style="width:100%;height:650px;border:0;" title="BouncePartyLA Booking"></iframe>`;
+
+  // ===== Calendar helpers =====
+  const month = useMemo(()=> new Date(date.slice(0,7)+"-01"), [date]);
+  const daysInMonth = useMemo(()=> new Date(month.getFullYear(), month.getMonth()+1, 0).getDate(), [month]);
+  const firstWeekday = useMemo(()=> new Date(month.getFullYear(), month.getMonth(), 1).getDay() || 7, [month]); // Mon=1..Sun=7
+  const dailyCounts = useMemo(()=>{
+    const counts: Record<string, number> = {}; bookings.forEach(b=>{ counts[b.date]=(counts[b.date]||0)+1; }); return counts;
+  },[bookings]);
+
+  return (
+    <div className="min-h-screen w-full bg-neutral-50 p-6">
+      <div className="mx-auto max-w-6xl">
+        <header className="mb-6 flex items-center justify-between">
+          <h1 className="text-2xl font-semibold tracking-tight">BouncePartyLA — Booking & Inventory</h1>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={resetAll}>Reset</Button>
+          </div>
+        </header>
+
+        <Tabs defaultValue="book" className="w-full">
+          <TabsList className="grid w-full grid-cols-6">
+            <TabsTrigger value="book">New Booking</TabsTrigger>
+            <TabsTrigger value="inventory">Inventory</TabsTrigger>
+            <TabsTrigger value="orders">Orders</TabsTrigger>
+            <TabsTrigger value="calendar"><CalIcon className="mr-1 h-4 w-4"/>Calendar</TabsTrigger>
+            <TabsTrigger value="widget">Website Widget</TabsTrigger>
+            <TabsTrigger value="settings"><Settings className="mr-1 h-4 w-4"/>Settings</TabsTrigger>
+          </TabsList>
+
+          {/* New Booking */}
+          <TabsContent value="book" className="mt-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {/* Left side */}
+              <div className="md:col-span-2 space-y-4">
+                <Card className="shadow-sm">
+                  <CardHeader><CardTitle>Event & Customer</CardTitle></CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                      <div><Label>Date</Label><Input type="date" value={date} onChange={e=>setDate(e.target.value)} /></div>
+                      <div><Label>ZIP</Label><Input value={zip} onChange={e=>setZip(e.target.value)} maxLength={5} /><div className="text-xs text-neutral-500 mt-1">Tax: {(getTaxRate(zip)*100).toFixed(2)}% (fallback)</div></div>
+                      <div>
+                        <Label>Venue</Label>
+                        <Select value={venueType} onValueChange={(v:any)=>setVenueType(v)}>
+                          <SelectTrigger><SelectValue placeholder="Venue"/></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="house">House</SelectItem>
+                            <SelectItem value="park">Park</SelectItem>
+                            <SelectItem value="venue">Venue</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center gap-2"><Switch checked={hasOutlet} onCheckedChange={setHasOutlet} id="outlet" /><Label htmlFor="outlet">Outlet available?</Label></div>
+                      {generatorFee>0 && <Badge className="ml-2" variant="secondary">Generator added: {money(generatorFee)}</Badge>}
+                      <div className="grid grid-cols-3 gap-2 w-full md:w-auto md:grid-cols-3 md:ml-auto">
+                        <div>
+                          <Label>Distance (mi)</Label>
+                          <Input type="number" placeholder="e.g. 12" value={distanceMiles ?? ''} onChange={e=> setDistanceMiles(e.target.value? +e.target.value : undefined)} />
+                        </div>
+                        <div>
+                          <Label>Per‑mile</Label>
+                          <Input type="number" value={settings.ratePerMile} readOnly className="bg-neutral-100" />
+                        </div>
+                        <div>
+                          <Label>Delivery fee</Label>
+                          <Input type="number" value={deliveryFee} onChange={e=> setDeliveryFee(+e.target.value)} />
+                          <div className="text-[11px] text-neutral-500">Hint: miles × rate = {distanceMiles? money(distanceMiles*settings.ratePerMile): money(0)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div><Label>Customer name</Label><Input value={customerName} onChange={e=>setCustomerName(e.target.value)} /></div>
+                      <div><Label>Phone</Label><Input value={phone} onChange={e=>setPhone(e.target.value)} /></div>
+                      <div><Label>Email</Label><Input value={email} onChange={e=>setEmail(e.target.value)} /></div>
+                      <div><Label>Address</Label><Input value={address} onChange={e=>setAddress(e.target.value)} /></div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                      <div><Label>Driver</Label><Input value={driver} onChange={e=> setDriver(e.target.value)} placeholder="e.g. Alex"/></div>
+                      <div>
+                        <Label>Status</Label>
+                        <Select value={status} onValueChange={(v:any)=> setStatus(v)}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="new">new</SelectItem>
+                            <SelectItem value="confirmed">confirmed</SelectItem>
+                            <SelectItem value="delivered">delivered</SelectItem>
+                            <SelectItem value="picked_up">picked_up</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div><Label>Internal notes</Label><Textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Insurance cert, park permit, ball colors, etc." /></div>
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-sm">
+                  <CardHeader><CardTitle>Add Items / Packages / Add‑ons</CardTitle></CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {availability.map(item=> (
+                        <div key={item.sku} className="rounded-2xl border p-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-medium flex items-center gap-2">{item.category==="package" && <Package className="h-4 w-4"/>}{item.name}</div>
+                              <div className="text-sm text-neutral-500">{item.price>0? money(item.price):"Package"} · Stock {item.stock} · Reserved {item.reserved} · <span className={item.available>0?"text-green-600":"text-red-600"}>Avail {item.available}</span></div>
+                            </div>
+                            <Button size="sm" onClick={()=>addToCart(item.sku)} disabled={item.inCart>=item.available}><Plus className="mr-1 h-4 w-4"/>Add</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-sm">
+                  <CardHeader><CardTitle>Cart & Totals</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">
+                    {cart.length===0 && <div className="text-sm text-neutral-500">No items yet.</div>}
+                    {cart.map(line=>{ const inv=inventory.find(i=>i.sku===line.sku)!; const reserved=reservedMap[line.sku]??0; const available=Math.max(inv.stock - reserved,0); const over=line.qty>available; return (
+                      <div key={line.sku} className={`grid grid-cols-12 items-center gap-2 rounded-xl border p-2 ${over?"border-red-300 bg-red-50":""}`}>
+                        <div className="col-span-6"><div className="font-medium">{inv.name}</div><div className="text-xs text-neutral-500">{inv.category.toUpperCase()} · SKU {inv.sku} · {inv.price>0? money(inv.price):"Package"}</div></div>
+                        <div className="col-span-3 flex items-center gap-2"><Button size="icon" variant="secondary" onClick={()=>decFromCart(line.sku)}>-</Button><div className="w-8 text-center font-medium">{line.qty}</div><Button size="icon" variant="secondary" onClick={()=>addToCart(line.sku)}>+</Button></div>
+                        <div className="col-span-2 text-right font-semibold">{inv.price>0? money(inv.price*line.qty): "—"}</div>
+                        <div className="col-span-1 text-right"><Button size="icon" variant="ghost" onClick={()=>removeFromCart(line.sku)}><Trash2 className="h-4 w-4"/></Button></div>
+                        {over && <div className="col-span-12 text-xs text-red-600">Only {available} available on {date} (reserved {reserved} / stock {inv.stock}).</div>}
+                      </div>
+                    );})}
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+                      <div><Label>Delivery fee</Label><Input type="number" value={deliveryFee} onChange={e=>setDeliveryFee(+e.target.value)} /></div>
+                      <div><Label>Generator fee</Label><Input type="number" value={generatorFee} readOnly className="bg-neutral-100" /></div>
+                      <div><Label>Discount</Label><Input type="number" value={discount} onChange={e=>setDiscount(+e.target.value)} /></div>
+                      <div><Label>Deposit %</Label><Input type="number" value={depositPercent} onChange={e=>setDepositPercent(+e.target.value)} /></div>
+                      <div><Label>Auto delivery = miles × rate</Label><Input readOnly value={distanceMiles? money(distanceMiles*settings.ratePerMile): money(0)} className="bg-neutral-100"/></div>
+                    </div>
+
+                    <div className="rounded-xl bg-neutral-50 p-3">
+                      <div className="flex items-center justify-between text-sm"><div>Subtotal</div><div className="font-medium">{money(totals.subtotal)}</div></div>
+                      <div className="flex items-center justify-between text-sm"><div>Extras (delivery + generator − discount)</div><div className="font-medium">{money((deliveryFee||0)+(generatorFee||0)-(discount||0))}</div></div>
+                      <div className="flex items-center justify-between text-sm"><div>Sales tax</div><div className="font-medium">{money(totals.taxAmount)} <span className="text-xs text-neutral-500">@{(totals.taxRate*100).toFixed(2)}%</span></div></div>
+                      <div className="flex items-center justify-between text-sm"><div>Deposit ({depositPercent}%)</div><div className="font-medium">{money(totals.depositAmount)}</div></div>
+                      <div className="mt-2 flex items-center justify-between text-base"><div className="font-semibold">Total</div><div className="text-lg font-extrabold">{money(totals.total)}</div></div>
+                      <div className="flex items-center justify-between text-sm"><div>Balance due</div><div className="font-semibold">{money(totals.balanceDue)}</div></div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      <Button onClick={saveBooking}><Check className="mr-2 h-4 w-4"/>Save booking</Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Right side */}
+              <div className="space-y-4">
+                <Card className="shadow-sm">
+                  <CardHeader><CardTitle>Availability — {date}</CardTitle></CardHeader>
+                  <CardContent className="space-y-2">
+                    {availability.map(a=> (
+                      <div key={a.sku} className="flex items-center justify-between rounded-lg border p-2">
+                        <div><div className="text-sm font-medium">{a.name}</div><div className="text-xs text-neutral-500">{a.category.toUpperCase()} · SKU {a.sku}</div></div>
+                        <div className="text-right"><div className={`text-sm font-semibold ${a.available>0?"text-green-700":"text-red-700"}`}>{a.available} available</div><div className="text-xs text-neutral-500">Reserved {a.reserved} / Stock {a.stock}</div></div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-sm">
+                  <CardHeader><CardTitle>How tax, delivery & deposit work</CardTitle></CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-neutral-600">Tax: ZIP fallback or precise API (Settings). Delivery: you can input miles and use per‑mile rate for a suggested fee. Deposit: percentage of total.</p>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* Inventory */}
+          <TabsContent value="inventory" className="mt-4">
+            <Card className="shadow-sm">
+              <CardHeader><CardTitle>Inventory</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {inventory.map((it, idx)=> (
+                    <div key={it.sku} className="grid grid-cols-12 items-start gap-2 rounded-xl border p-3">
+                      <div className="col-span-4"><Label>Name</Label><Input value={it.name} onChange={e=> setInventory(p=> p.map((x,i)=> i===idx?{...x,name:e.target.value}:x))} /></div>
+                      <div className="col-span-3"><Label>SKU</Label><Input value={it.sku} onChange={e=> setInventory(p=> p.map((x,i)=> i===idx?{...x,sku:e.target.value}:x))} /></div>
+                      <div className="col-span-2"><Label>Price</Label><Input type="number" value={it.price} onChange={e=> setInventory(p=> p.map((x,i)=> i===idx?{...x,price:+e.target.value}:x))} /></div>
+                      <div className="col-span-2"><Label>Stock</Label><Input type="number" value={it.stock} onChange={e=> setInventory(p=> p.map((x,i)=> i===idx?{...x,stock:+e.target.value}:x))} /></div>
+                      <div className="col-span-1 text-right"><Button variant="ghost" size="icon" onClick={()=> setInventory(p=> p.filter((_,i)=> i!==idx))}><Trash2 className="h-4 w-4"/></Button></div>
+                      <div className="col-span-12">
+                        <Label>Category</Label>
+                        <Select value={it.category} onValueChange={(v:any)=> setInventory(p=> p.map((x,i)=> i===idx?{...x,category:v}:x))}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="main">main</SelectItem>
+                            <SelectItem value="addon">addon</SelectItem>
+                            <SelectItem value="package">package</SelectItem>
+                            <SelectItem value="component">component</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {it.category!=="addon" && (
+                        <div className="col-span-12">
+                          <Label>Components (BOM or Package contents)</Label>
+                          <Textarea placeholder='JSON, e.g. [{"sku":"COMP-BLOWER-1HP","qty":1}]' value={JSON.stringify(it.components||[])} onChange={e=>{
+                            try{ const v = JSON.parse(e.target.value||"[]"); setInventory(p=> p.map((x,i)=> i===idx?{...x,components:v}:x)); } catch{}
+                          }} />
+                          <div className="text-xs text-neutral-500">Used for driver packing lists and package expansion.</div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div><Button onClick={()=> setInventory(p=> [...p, { sku:`SKU-${Date.now()}`, name:"New item", price:0, stock:1, category:"main" }])}><Plus className="mr-2 h-4 w-4"/>Add item</Button></div>
+              </CardContent>
+            </Card>
+
+            <Card className="mt-4 shadow-sm">
+              <CardHeader><CardTitle>ZIP → Sales Tax Map</CardTitle></CardHeader>
+              <CardContent>
+                <p className="text-sm text-neutral-600 mb-2">Edit in code (TAX_BY_ZIP). Fallback when precise API is disabled or unavailable.</p>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {Object.entries(TAX_BY_ZIP).slice(0, 12).map(([z,r])=> (
+                    <div key={z} className="flex items-center justify-between rounded-lg border p-2"><span className="font-mono">{z}</span><span>{(r*100).toFixed(2)}%</span></div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Orders */}
+          <TabsContent value="orders" className="mt-4">
+            <Card className="shadow-sm">
+              <CardHeader><CardTitle>All Orders</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                {bookings.length===0 && <div className="text-sm text-neutral-500">No bookings yet.</div>}
+                {bookings.map(b=> (
+                  <div key={b.id} className="rounded-2xl border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-semibold">{b.date} · {b.customerName} {b.driver? <span className="text-xs text-neutral-500">· Driver {b.driver}</span>: null}</div>
+                      <div className="text-sm">{money(b.total)}</div>
+                    </div>
+                    <div className="mt-1 text-xs text-neutral-600 flex flex-wrap gap-x-3 gap-y-1 items-center">
+                      <span>{b.venueType.toUpperCase()}</span>
+                      <span>ZIP {b.zip}</span>
+                      <span>Tax {(b.taxRate*100).toFixed(2)}%</span>
+                      <span>Delivery {money(b.deliveryFee)}</span>
+                      <span>Generator {money(b.generatorFee)}</span>
+                      <span>Deposit {money(b.depositAmount)}</span>
+                      <span>Balance {money(b.balanceDue)}</span>
+                      {b.distanceMiles!==undefined && <span><MapPin className="inline h-3 w-3 mr-1"/>{b.distanceMiles} mi</span>}
+                      {b.status && <Badge variant="secondary">{b.status}</Badge>}
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-1 md:grid-cols-2">
+                      <div>
+                        <div className="text-xs font-medium">Items</div>
+                        {expandPackages(b.lines, inventory).map((l,i)=>{ const inv=inventory.find(x=>x.sku===l.sku); return <div key={i} className="text-sm">{l.qty} × {inv?.name ?? l.sku}</div>; })}
+                      </div>
+                      <div className="text-xs text-neutral-600">{b.address && <div>{b.address}</div>}{b.phone && <div>{b.phone}</div>}{b.email && <div>{b.email}</div>}{b.notes && <div className="mt-1 italic">{b.notes}</div>}</div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <DriverSlipButton booking={b} inventory={inventory} />
+                      <ContractButton booking={b} />
+                      <InvoiceButton booking={b} />
+                      <PayButtons booking={b} settings={settings} />
+                    </div>
+                  </div>
+                ))}
+
+                {/* Export routes for selected day */}
+                <div className="pt-2 border-t mt-4 flex items-center gap-2">
+                  <ExportDayRoutes bookings={bookings} date={date} />
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Calendar */}
+          <TabsContent value="calendar" className="mt-4">
+            <Card className="shadow-sm">
+              <CardHeader><CardTitle className="flex items-center gap-2"><CalIcon className="h-5 w-5"/> Month — {month.toLocaleString(undefined,{month:'long', year:'numeric'})}</CardTitle></CardHeader>
+              <CardContent>
+                <div className="mb-3 text-xs text-neutral-600">Click a day to filter Orders tab. Numbers show total bookings that day.</div>
+                <div className="grid grid-cols-7 gap-2">
+                  {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d=> <div key={d} className="text-center text-xs text-neutral-500">{d}</div>)}
+                  {Array.from({length:firstWeekday-1}).map((_,i)=> <div key={"empty"+i}></div>)}
+                  {Array.from({length:daysInMonth}).map((_,i)=>{
+                    const d = i+1; const ds = `${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                    const count = dailyCounts[ds]||0;
+                    return (
+                      <button key={ds} onClick={()=> (document.getElementById('orders-tab')?.scrollIntoView({behavior:'smooth'}), (document.getElementById('dateInput') as HTMLInputElement).value = ds, (document.getElementById('dateInput') as HTMLInputElement).dispatchEvent(new Event('input', {bubbles:true})) )} className={`rounded-xl border p-3 text-left ${count? 'bg-white' : 'bg-neutral-50'}`}>
+                        <div className="text-sm font-semibold">{d}</div>
+                        <div className="text-xs text-neutral-500">{count} orders</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Website Widget */}
+          <TabsContent value="widget" className="mt-4">
+            <Card className="shadow-sm">
+              <CardHeader><CardTitle>Website Widget</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-neutral-600">Вставь на сайт через iframe. Код:</p>
+                <div className="rounded-xl border p-3 bg-white text-sm font-mono overflow-x-auto">{widgetEmbedCode}</div>
+                <div className="flex gap-2"><Button size="sm" onClick={()=>copyText(widgetEmbedCode)}><Copy className="mr-1 h-4 w-4"/>Copy</Button><Button variant="secondary" size="sm"><ExternalLink className="mr-1 h-4 w-4"/>Preview</Button></div>
+                <p className="text-sm text-neutral-600">Режим #widget рисует лёгкую форму: дата, ZIP, выбор позиции/комплекта и отправка лид‑заявки. (Можно расширить до полного бронирования + Stripe.)</p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Settings */}
+          <TabsContent value="settings" className="mt-4">
+            <Card className="shadow-sm">
+              <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="h-5 w-5"/> Settings</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="rounded-xl border p-3">
+                    <div className="font-medium mb-2"><DollarSign className="inline h-4 w-4 mr-1"/>Stripe Payment Links</div>
+                    <Label>Deposit link URL</Label>
+                    <Input value={settings.stripeDepositLink} onChange={e=> setSettings(s=> ({...s, stripeDepositLink: e.target.value}))} placeholder="https://buy.stripe.com/..."/>
+                    <Label className="mt-2 block">Full payment link URL</Label>
+                    <Input value={settings.stripeFullLink} onChange={e=> setSettings(s=> ({...s, stripeFullLink: e.target.value}))} placeholder="https://buy.stripe.com/..."/>
+                    <div className="text-xs text-neutral-500 mt-1">Используются кнопками Pay в заказах. Для динамических сумм потребуется сервер.</div>
+                  </div>
+
+                  <div className="rounded-xl border p-3">
+                    <div className="font-medium mb-2"><Route className="inline h-4 w-4 mr-1"/>Delivery</div>
+                    <Label>Origin ZIP</Label>
+                    <Input value={settings.originZip} onChange={e=> setSettings(s=> ({...s, originZip: e.target.value}))} />
+                    <Label className="mt-2 block">Rate per mile ($)</Label>
+                    <Input type="number" value={settings.ratePerMile} onChange={e=> setSettings(s=> ({...s, ratePerMile: +e.target.value}))} />
+                    <div className="text-xs text-neutral-500 mt-1">Автоподсказка цены доставки: miles × rate. Для авто‑расчёта миль требуется внешнее API (пока не подключено).</div>
+                  </div>
+
+                  <div className="rounded-xl border p-3">
+                    <div className="font-medium mb-2">Precise Tax (API)</div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Switch checked={settings.preciseTaxEnabled} onCheckedChange={(v)=> setSettings(s=> ({...s, preciseTaxEnabled: !!v}))}/>
+                      <span className="text-sm">Enable precise tax via API (beta)</span>
+                    </div>
+                    <Label>Tax API URL</Label>
+                    <Input value={settings.taxApiUrl} onChange={e=> setSettings(s=> ({...s, taxApiUrl: e.target.value}))} placeholder="https://api.example.com/tax"/>
+                    <Label className="mt-2 block">API Key</Label>
+                    <Input value={settings.taxApiKey} onChange={e=> setSettings(s=> ({...s, taxApiKey: e.target.value}))} placeholder="sk_live_... (server recommended)"/>
+                    <div className="text-xs text-neutral-500 mt-1">Большинство провайдеров требуют сервер. Здесь включён «best effort» с тихим фолбэком к ZIP‑ставке.</div>
+                  </div>
+
+                  <div className="rounded-xl border p-3">
+                    <div className="font-medium mb-2">Supabase (placeholders)</div>
+                    <Label>URL</Label>
+                    <Input value={settings.supabaseUrl} onChange={e=> setSettings(s=> ({...s, supabaseUrl: e.target.value}))} />
+                    <Label className="mt-2 block">Anon key</Label>
+                    <Input value={settings.supabaseAnon} onChange={e=> setSettings(s=> ({...s, supabaseAnon: e.target.value}))} />
+                    <div className="text-xs text-neutral-500 mt-1">Следующий шаг: заменить localStorage на Supabase таблицы (inventory, bookings, components, settings) + Auth и роли.</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+
+        {/* Hidden input to sync calendar click to date field */}
+        <input id="dateInput" className="hidden" value={date} onChange={(e)=> setDate((e.target as HTMLInputElement).value)} readOnly={false}/>
+
+        {/* Lightweight Widget renderer if URL hash === #widget */}
+        {typeof window !== 'undefined' && window.location.hash === '#widget' && (
+          <Widget inventory={inventory} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ========================= Widget =========================
+function Widget({ inventory }: { inventory: InventoryItem[] }){
+  const [date,setDate] = useState<string>(new Date().toISOString().slice(0,10));
+  const [zip,setZip] = useState("");
+  const [choice,setChoice] = useState<string>("");
+  const submit = ()=>{ const item = inventory.find(i=>i.sku===choice); alert(`Lead submitted for ${item?.name||choice}
+Date: ${date}
+ZIP: ${zip}`); };
+  const bookables = inventory.filter(i=> i.category!=="component");
+  return (
+    <div className="fixed inset-0 z-50 bg-white/80 backdrop-blur p-4">
+      <div className="mx-auto max-w-lg rounded-2xl border bg-white p-4 shadow-lg">
+        <div className="text-lg font-semibold mb-2">BouncePartyLA — Quick Request</div>
+        <div className="grid grid-cols-1 gap-3">
+          <div><Label>Date</Label><Input type="date" value={date} onChange={e=>setDate(e.target.value)} /></div>
+          <div><Label>ZIP</Label><Input value={zip} onChange={e=>setZip(e.target.value)} maxLength={5} /></div>
+          <div><Label>Choose item/package</Label>
+            <select className="w-full rounded-md border p-2" value={choice} onChange={e=>setChoice(e.target.value)}>
+              <option value="">—</option>
+              {bookables.map(x=> <option key={x.sku} value={x.sku}>{x.name}</option>)}
+            </select>
+          </div>
+          <Button onClick={submit}><Handshake className="mr-2 h-4 w-4"/>Send request</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========================= Driver Slip =========================
+function DriverSlipButton({ booking, inventory }: { booking: Booking; inventory: InventoryItem[] }){
+  const lines = expandPackages(booking.lines, inventory);
+  const components = aggregateComponents(booking.lines, inventory);
+  const compMap = new Map(inventory.map(i=>[i.sku,i] as const));
+  const printSlip = ()=>{
+    const items = lines.map(l=>`• ${l.qty} × ${(compMap.get(l.sku)?.name)||l.sku}`).join('
+');
+    const gear = components.map(c=>`• ${c.qty} × ${(compMap.get(c.sku)?.name)||c.sku}`).join('
+');
+    const extras = [ booking.generatorFee>0? `• 1 × Generator (added)`: null ].filter(Boolean).join('
+');
+    const text = `DRIVER SLIP — ${booking.date}
+Customer: ${booking.customerName}
+Venue: ${booking.venueType.toUpperCase()} — ZIP ${booking.zip}${booking.address? `
+Address: ${booking.address}`:""}
+Phone: ${booking.phone||""}
+
+BOOKED ITEMS:
+${items}
+
+REQUIRED GEAR (BOM):
+${gear}${extras?"
+"+extras:""}
+
+NOTES:
+${booking.notes||"—"}`;
+    const w = window.open("", "_blank"); if(!w) return alert("Pop-up blocked");
+    w.document.write(`<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;">${text.replace(/</g,'&lt;')}</pre>`);
+    w.document.close(); w.focus(); w.print();
+  };
+  return <Button size="sm" onClick={printSlip}><Printer className="mr-1 h-4 w-4"/>Driver slip</Button>;
+}
+
+// ========================= Contract / Invoice =========================
+function ContractButton({ booking }: { booking: Booking }){
+  const contract = useMemo(()=> buildContract(booking), [booking]);
+  return (
+    <div className="flex gap-2">
+      <Button variant="secondary" size="sm" onClick={()=> copyText(contract)}><Copy className="mr-1 h-4 w-4"/>Copy contract</Button>
+      <Button size="sm" onClick={()=> openDoc(contract)}><FileText className="mr-1 h-4 w-4"/>Open</Button>
+    </div>
+  );
+}
+
+function InvoiceButton({ booking }: { booking: Booking }){
+  const invoice = useMemo(()=> buildInvoice(booking), [booking]);
+  return (
+    <div className="flex gap-2">
+      <Button variant="secondary" size="sm" onClick={()=> copyText(invoice)}><Copy className="mr-1 h-4 w-4"/>Copy invoice</Button>
+      <Button size="sm" onClick={()=> openDoc(invoice)}><FileText className="mr-1 h-4 w-4"/>Invoice</Button>
+    </div>
+  );
+}
+
+function PayButtons({ booking, settings }: { booking: Booking; settings: SettingsModel }){
+  const payDeposit = ()=>{ if(!settings.stripeDepositLink) return alert("Add Deposit link in Settings"); window.open(settings.stripeDepositLink+`?prefilled_email=${encodeURIComponent(booking.email||'')}&client_reference_id=${booking.id}`, "_blank"); };
+  const payFull = ()=>{ if(!settings.stripeFullLink) return alert("Add Full payment link in Settings"); window.open(settings.stripeFullLink+`?prefilled_email=${encodeURIComponent(booking.email||'')}&client_reference_id=${booking.id}`, "_blank"); };
+  return (
+    <div className="flex gap-2">
+      <Button size="sm" onClick={payDeposit}><DollarSign className="mr-1 h-4 w-4"/>Pay deposit</Button>
+      <Button size="sm" variant="secondary" onClick={payFull}><DollarSign className="mr-1 h-4 w-4"/>Pay in full</Button>
+    </div>
+  );
+}
+
+function openDoc(text: string){ const w = window.open("", "_blank"); if(!w) return alert("Pop-up blocked"); w.document.write(`<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;">${text.replace(/</g,'&lt;')}</pre>`); w.document.close(); w.focus(); }
+
+function buildContract(b: Booking){
+  return `BOUNCEPARTYLA RENTAL AGREEMENT & WAIVER
+Date: ${b.date}
+Customer: ${b.customerName}${b.address?"
+Address: "+b.address:""}${b.phone?"
+Phone: "+b.phone:""}${b.email?"
+Email: "+b.email:""}
+
+ORDER SUMMARY
+Items: ${b.lines.map(l=> `${l.qty}x ${l.sku}`).join(', ')}
+Delivery: ${money(b.deliveryFee)}   Generator: ${money(b.generatorFee)}   Discount: ${money(b.discount)}
+Tax (${(b.taxRate*100).toFixed(2)}%): ${money(b.taxAmount)}
+TOTAL: ${money(b.total)}   DEPOSIT (${b.depositPercent}%): ${money(b.depositAmount)}   BALANCE: ${money(b.balanceDue)}
+
+TERMS & CONDITIONS (Short)
+1) SUPERVISION: An adult must supervise all use at all times.
+2) SURFACE & ANCHORING: Renter responsible for adequate space, clear area, and anchoring; stakes/sandbags provided as needed.
+3) WEATHER: High winds (>15mph) or rain may require shutdown.
+4) ELECTRICITY: Dedicated outlet per blower (15A) within 100ft; generator available for parks/venues.
+5) DAMAGE/FEES: Renter responsible for excessive cleaning, damage due to misuse, and lost accessories.
+6) LIABILITY WAIVER: Renter assumes all risk of injury or property damage arising from use. Provider not liable to extent permitted by CA law.
+7) CANCELLATION/DEPOSIT: Deposit is non‑refundable within 7 days of event; otherwise transferable once within 6 months.
+8) PERMITS/INSURANCE: Renter to secure park/venue permits; COI available on request.
+
+SIGNATURES
+Customer: ____________________________   Date: ____________
+Provider (BouncePartyLA): _____________   Date: ____________
+`;
+}
+
+function buildInvoice(b: Booking){
+  return `INVOICE
+Invoice #: ${b.id}
+Date: ${b.date}
+Bill To: ${b.customerName}${b.address?"
+"+b.address:""}${b.email?"
+"+b.email:""}${b.phone?"
+"+b.phone:""}
+
+Items:
+${expandPackages(b.lines, []).map(()=>"").join("") /* placeholder to keep TS quiet in canvas env */}
+Subtotal: ${money(b.subtotal)}
+Delivery: ${money(b.deliveryFee)}
+Generator: ${money(b.generatorFee)}
+Discount: ${money(-b.discount)}
+Tax (${(b.taxRate*100).toFixed(2)}%): ${money(b.taxAmount)}
+TOTAL: ${money(b.total)}
+Deposit: ${money(b.depositAmount)}
+Balance Due: ${money(b.balanceDue)}
+
+Payment Links:
+Deposit: (see Settings)
+Full: (see Settings)
+`;
+}
+
+// ========================= Export routes CSV =========================
+function ExportDayRoutes({ bookings, date }: { bookings: Booking[]; date: string }){
+  const exportCsv = ()=>{
+    const rows = ["date,customer,address,zip,phone,driver,status,total"];
+    bookings.filter(b=> b.date===date).forEach(b=>{
+      rows.push([b.date, b.customerName, JSON.stringify(b.address||""), b.zip, JSON.stringify(b.phone||""), JSON.stringify(b.driver||""), b.status||"", b.total].join(','));
+    });
+    downloadFile(`routes-${date}.csv`, rows.join('
+'));
+  };
+  return <Button size="sm" onClick={exportCsv}><Route className="mr-1 h-4 w-4"/>Export routes CSV ({date})</Button>;
+}
+
+// ========================= Cloud Deployment Guide (Vercel + Supabase + Stripe) =========================
+// This section adds ready-to-use configs and serverless endpoints for cloud.
+// You can copy these snippets into real files in your repo and deploy.
+
+/*
+1) Folder structure (recommended)
+
+  / (repo root)
+  ├─ src/ (your React code; this file can live in src/App.tsx or src/main.tsx)
+  ├─ index.html (if Vite)
+  ├─ package.json
+  ├─ vercel.json
+  └─ /api
+      ├─ tax.ts              (serverless: precise tax proxy)
+      ├─ stripe-checkout.ts  (serverless: dynamic checkout session)
+      └─ stripe-webhook.ts   (serverless: webhook for payment events)
+
+2) package.json (Vite + Vercel)
+*/
+
+// package.json
+// — add this at repo root
+/*
+{
+  "name": "bounceparty-booking",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.6.2"
+  }
+}
+*/
+
+/* 3) vercel.json — tells Vercel to treat /api as serverless functions */
+// vercel.json
+/*
+{
+  "version": 2,
+  "builds": [
+    { "src": "api/*.ts", "use": "@vercel/node" },
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "dist/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}
+*/
+
+/* 4) Serverless: /api/tax.ts  — proxies to TaxJar/Avalara (avoid CORS + keep key secret) */
+// api/tax.ts
+/*
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  try {
+    const { to_address, amount } = req.body || {};
+    if (!to_address || typeof amount !== 'number') return res.status(400).json({ error: 'to_address and amount required' });
+
+    // Example TaxJar call structure; replace with your provider
+    const taxApiUrl = process.env.TAX_API_URL!; // e.g. https://api.taxjar.com/v2/taxes
+    const apiKey = process.env.TAX_API_KEY!;    // secret key in Vercel env vars
+
+    const r = await fetch(taxApiUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_address, amount })
+    });
+
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json({ error: data?.error || 'Tax API failed' });
+
+    const rate = Number(data?.rate ?? data?.tax_rate ?? data?.tax?.rate) || null;
+    return res.status(200).json({ rate });
+  } catch (e:any) {
+    return res.status(500).json({ error: e?.message || 'Server error' });
+  }
+}
+*/
+
+/* 5) Serverless: /api/stripe-checkout.ts — dynamic Checkout Session for deposit/full */
+// api/stripe-checkout.ts
+/*
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, { apiVersion: '2024-06-20' });
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  try {
+    const { bookingId, customerEmail, amount, mode } = req.body || {};
+    if (!bookingId || !amount || !['deposit','full'].includes(mode)) return res.status(400).json({ error: 'bookingId, amount, mode required' });
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      customer_email: customerEmail || undefined,
+      line_items: [{ price_data: { currency: 'usd', product_data: { name: `BouncePartyLA ${mode} payment` }, unit_amount: Math.round(Number(amount) * 100) }, quantity: 1 }],
+      success_url: `${process.env.PUBLIC_BASE_URL}/?pay=success&booking=${bookingId}`,
+      cancel_url: `${process.env.PUBLIC_BASE_URL}/?pay=cancel&booking=${bookingId}`,
+      client_reference_id: bookingId,
+      metadata: { bookingId, mode }
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (e:any) {
+    return res.status(500).json({ error: e?.message || 'Stripe error' });
+  }
+}
+*/
+
+/* 6) Serverless: /api/stripe-webhook.ts — confirm payments (set status in DB) */
+// api/stripe-webhook.ts
+/*
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import Stripe from 'stripe';
+
+export const config = { api: { bodyParser: false } } as const;
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, { apiVersion: '2024-06-20' });
+  const sig = req.headers['stripe-signature'] as string;
+  const buf = await new Promise<Buffer>((resolve) => {
+    const chunks: Buffer[] = [] as any; req.on('data', (c)=> chunks.push(c)); req.on('end',()=> resolve(Buffer.concat(chunks)));
+  });
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(buf, sig, process.env.STRIPE_WEBHOOK_SECRET!);
+  } catch (err:any) { return res.status(400).send(`Webhook Error: ${err.message}`); }
+
+  // TODO: update booking status in Supabase by client_reference_id
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object as Stripe.Checkout.Session;
+    const bookingId = session.client_reference_id as string;
+    // await supabase.from('bookings').update({ status: 'confirmed' }).eq('id', bookingId);
+  }
+  res.json({ received: true });
+}
+*/
+
+/* 7) Supabase schema.sql — minimal tables */
+// supabase/schema.sql
+/*
+create table if not exists inventory (
+  sku text primary key,
+  name text not null,
+  price numeric not null default 0,
+  stock integer not null default 0,
+  category text not null,
+  components jsonb
+);
+
+create table if not exists bookings (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,
+  customer_name text not null,
+  phone text,
+  email text,
+  address text,
+  zip text not null,
+  venue_type text not null,
+  has_outlet boolean not null default true,
+  delivery_fee numeric not null default 0,
+  generator_fee numeric not null default 0,
+  discount numeric not null default 0,
+  distance_miles numeric,
+  driver text,
+  status text,
+  lines jsonb not null,
+  subtotal numeric not null,
+  tax_rate numeric not null,
+  tax_amount numeric not null,
+  total numeric not null,
+  deposit_percent numeric not null,
+  deposit_amount numeric not null,
+  balance_due numeric not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists settings (
+  id int primary key default 1,
+  data jsonb not null
+);
+*/
+
+/* 8) .env vars on Vercel
+   STRIPE_SECRET_KEY=sk_live_...
+   STRIPE_WEBHOOK_SECRET=whsec_...
+   PUBLIC_BASE_URL=https://your-deployment-url.vercel.app
+   TAX_API_URL=https://api.taxjar.com/v2/taxes  (or your provider)
+   TAX_API_KEY=...
+   SUPABASE_URL=...
+   SUPABASE_ANON_KEY=...
+*/
+
+/* 9) Hook up frontend to cloud endpoints
+   - In this React file, set settings.preciseTaxEnabled=true and taxApiUrl='/api/tax'
+   - Replace Payment Links flow: call /api/stripe-checkout with { bookingId, amount: totals.depositAmount, mode:'deposit' }
+*/
+
+// Example: open dynamic Stripe Checkout from UI
+/*
+async function openStripe(amount:number, mode:'deposit'|'full', bookingId:string, email?:string){
+  const r = await fetch('/api/stripe-checkout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ bookingId, customerEmail: email||'', amount, mode }) });
+  const j = await r.json(); if(!r.ok) return alert(j.error||'Stripe error'); window.open(j.url, '_blank');
+}
+*/
+
+// ========================= Deploy from terminal =========================
+/*
+# 1) Login and init
+npm i -g vercel
+vercel login
+
+# 2) Install deps and build
+npm install
+npm run build
+
+# 3) Set env vars (Vercel dashboard or CLI)
+vercel env add STRIPE_SECRET_KEY
+vercel env add STRIPE_WEBHOOK_SECRET
+vercel env add PUBLIC_BASE_URL
+vercel env add TAX_API_URL
+vercel env add TAX_API_KEY
+vercel env add SUPABASE_URL
+vercel env add SUPABASE_ANON_KEY
+
+# 4) Deploy
+vercel --prod
+
+# 5) Stripe webhook (after first deploy)
+stripe listen --forward-to https://your-deployment-url.vercel.app/api/stripe-webhook
+# copy secret to STRIPE_WEBHOOK_SECRET
+*/
+
